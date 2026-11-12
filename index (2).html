@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Protocolo Stroop Progresivo – DCA</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --ink:#1b1f24; --accent:#2f6fed; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Arial,sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:14px 20px; background:#1b1f24; color:#fff; }
+  main { max-width:960px; margin:0 auto; padding:16px; }
+  .panel { background:var(--card); border-radius:12px; padding:16px; margin-bottom:14px; box-shadow:0 1px 4px #0002; }
+  select, button { font-size:1rem; padding:9px 14px; border-radius:8px; border:1px solid #bbb; cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border:none; }
+  button.ok { background:#2e9d4f; color:#fff; border:none; }
+  button.err { background:#d63a3a; color:#fff; border:none; }
+  button.warn { background:#e0a100; color:#fff; border:none; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+  #stage { position:relative; height:340px; background:#fff; border:2px solid #ddd; border-radius:12px;
+           display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  .stim { font-family:Arial,sans-serif; font-size:36pt; font-weight:bold; text-align:center; }
+  .stim.rect { width:220px; height:110px; border-radius:6px; }
+  .stim.square { border:6px solid #333; padding:22px 34px; }
+  .stim.circle { border:6px solid #333; border-radius:50%; padding:42px 34px; }
+  .dist { position:absolute; font-size:30px; font-weight:bold; opacity:.85; pointer-events:none; }
+  #banner { min-height:24px; font-weight:600; color:#b00020; margin:8px 0; }
+  .hint { background:#eef3ff; border-left:4px solid var(--accent); padding:8px 12px; border-radius:6px; margin-top:8px; }
+  table { border-collapse:collapse; width:100%; font-size:.92rem; }
+  td, th { border-bottom:1px solid #e3e3e3; padding:6px 8px; text-align:left; }
+  .small { font-size:.85rem; color:#555; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<header><strong>Protocolo Stroop Progresivo – Rehabilitación Neuropsicológica (DCA)</strong></header>
+<main>
+
+  <section class="panel">
+    <div class="row">
+      <label for="levelSel"><b>Nivel:</b></label>
+      <select id="levelSel"></select>
+      <button class="primary" id="btnStart">Iniciar</button>
+      <button id="btnPause" disabled>Pausar (P)</button>
+      <button id="btnStop" disabled>Terminar</button>
+      <label class="small"><input type="checkbox" id="chkExpected" checked> Mostrar respuesta esperada (terapeuta)</label>
+    </div>
+    <div id="info" class="hint"></div>
+  </section>
+
+  <section class="panel">
+    <div id="progress" class="small">—</div>
+    <div id="stage"><span class="small">Selecciona un nivel y pulsa «Iniciar».</span></div>
+    <div id="banner"></div>
+    <div id="expected" class="hint hidden"></div>
+    <div class="row" style="margin-top:10px">
+      <button class="ok"   id="btnOk"    disabled>Correcto / Siguiente (Espacio)</button>
+      <button class="err"  id="btnErr"   disabled>Error (E)</button>
+      <button class="warn" id="btnSelf"  disabled>Autocorrección (A)</button>
+      <button class="err"  id="btnMotor" disabled style="display:none">Omisión motora (M)</button>
+    </div>
+    <div class="small" style="margin-top:6px">
+      Espacio = respuesta correcta y pasa al siguiente ítem. Autocorrección = el paciente se corrige dentro de 2 s; cuenta como correcta pero registra la latencia.
+    </div>
+  </section>
+
+  <section class="panel hidden" id="summaryPanel">
+    <h3>Resumen de la sesión</h3>
+    <div id="summary"></div>
+    <div class="row" style="margin-top:10px"><button id="btnCsv">Descargar CSV</button></div>
+    <details style="margin-top:10px"><summary>Detalle por ítem</summary><div id="detail"></div></details>
+  </section>
+</main>
+
+<script>
+/* ===================== CONFIGURACIÓN ===================== */
+const COLORS = { ROJO:'#e53935', AZUL:'#1e88e5', VERDE:'#2e9d4f', AMARILLO:'#e6b800', NEGRO:'#000' };
+const rnd  = n => Math.floor(Math.random()*n);
+const pick = a => a[rnd(a.length)];
+const shuffle = a => { for(let i=a.length-1;i>0;i--){const j=rnd(i+1);[a[i],a[j]]=[a[j],a[i]];} return a; };
+const colorsOf = n => ['ROJO','AZUL','VERDE','AMARILLO'].slice(0,n);
+
+function incong(cols, extra={}) {
+  const word = pick(cols);
+  const ink  = pick(cols.filter(c => c !== word));
+  return { text:word, ink, rule:'color', answer:ink, congruent:false, ...extra };
+}
+function cong(cols, extra={}) {
+  const w = pick(cols);
+  return { text:w, ink:w, rule:'color', answer:w, congruent:true, ...extra };
+}
+
+const SYMBOLS = ['&','%²','\'','#','@','★','▲','●','◆','§'];
+function distractors() {
+  const spots = [[5,8],[85,8],[5,80],[85,80],[45,3],[45,88],[5,45],[90,45]];
+  return spots.map(([x,y]) => ({
+    sym: pick(SYMBOLS), x, y, col: COLORS[pick(colorsOf(4))]
+  }));
+}
+
+/* Cada nivel: build() devuelve la lista de ítems */
+const LEVELS = [
+ { n:1, name:'Nivel 1 – Muy bajo (línea base)',
+   pac:'«Vamos a empezar con algo sencillo. En la primera parte, lea las palabras en voz alta lo más rápido que pueda. En la segunda parte, diga el color de las manchas.»',
+   ter:'Bloque A (palabras en tinta negra) y Bloque B (rectángulos de color). Descartar daltonismo/alexia. Fallo: <80% de denominación.',
+   start:'Confirmar comprensión de la consigna y fijación visual central.',
+   build:()=>{ const c=colorsOf(2), it=[];
+     for(let i=0;i<10;i++){ const w=pick(c); it.push({text:w,ink:'NEGRO',rule:'read',answer:w,block:'A (leer)'}); }
+     for(let i=0;i<10;i++){ const k=pick(c); it.push({kind:'rect',ink:k,rule:'color',answer:k,block:'B (color)'}); }
+     return it; } },
+ { n:2, name:'Nivel 2 – Bajo (inhibición básica)',
+   pac:'«Verá palabras que son nombres de colores, pero escritas en otro color. Diga únicamente el color de la tinta. No lea la palabra.»',
+   ter:'Enfatizar la supresión de la lectura. Si lee, recordar: «solo el color de la tinta». Dar 1 ensayo de práctica.',
+   start:'Mostrar 1 ejemplo de práctica antes de la señal.',
+   build:()=>Array.from({length:15},()=>incong(colorsOf(2))) },
+ { n:3, name:'Nivel 3 – Bajo-medio (congruentes + incongruentes)',
+   pac:'«Siga diciendo el color de la tinta. A veces la palabra y la tinta coinciden y otras no. No pause; responda rápido y preciso.»',
+   ter:'Comparar facilitación (congruentes) vs. costo de interferencia (incongruentes). >5 errores no corregidos → descender al Nivel 2.',
+   start:'El paciente confirma la regla: «el color de la tinta».',
+   build:()=>{ const c=colorsOf(3), it=[];
+     for(let i=0;i<10;i++){it.push(cong(c));it.push(incong(c));} return shuffle(it); } },
+ { n:4, name:'Nivel 4 – Medio (carga semántica)',
+   pac:'«Verá palabras que no son colores (objetos, animales, emociones) escritas en colores. Diga el color de la tinta ignorando el significado.»',
+   ter:'Comparar latencia de palabras emocionales (PELIGRO, LAGO…) vs. neutras (MESA…). Registrar intrusiones léxicas.',
+   start:'Fijación en el primer elemento.',
+   build:()=>{ const c=colorsOf(4), it=[];
+     const neutral=['MESA','PERRO','LLUVIA','SILLA','LIBRO','PUERTA'];
+     const emo=['PELIGRO','LAGO','MIEDO','FUEGO'];
+     const assoc={SANGRE:'ROJO',CIELO:'AZUL',PASTO:'VERDE',LIMÓN:'AMARILLO'};
+     for(let i=0;i<25;i++){
+       const r=i%3;
+       if(r===0){ const t=pick(neutral); const k=pick(c); it.push({text:t,ink:k,rule:'color',answer:k,cat:'neutra'}); }
+       else if(r===1){ const t=pick(emo); const k=pick(c); it.push({text:t,ink:k,rule:'color',answer:k,cat:'emocional'}); }
+       else { const t=pick(Object.keys(assoc)); const k=pick(c.filter(x=>x!==assoc[t])); it.push({text:t,ink:k,rule:'color',answer:k,cat:'asociada a color'}); }
+     }
+     return it; } },
+ { n:5, name:'Nivel 5 – Medio-alto (alternancia con clave visual)',
+   pac:'«Mire el contorno de cada palabra. Si está en un CUADRADO, LEA la palabra. Si está en un CÍRCULO, DIGA EL COLOR de la tinta.»',
+   ter:'Verificar perseveraciones. 3 ítems consecutivos con la misma regla errónea → detener y recordar claves.',
+   start:'2 ensayos guiados exitosos para cada regla.',
+   build:()=>Array.from({length:24},(_,i)=>{
+     const it=incong(colorsOf(4));
+     if(i%2===0){ it.frame='square'; it.rule='read'; it.answer=it.text; }
+     else { it.frame='circle'; it.rule='color'; it.answer=it.ink; }
+     return it; }) },
+ { n:6, name:'Nivel 6 – Alto (distractores periféricos)',
+   pac:'«Diga el color de la tinta de la palabra del centro. Ignore las formas, dibujos y figuras alrededor.»',
+   ter:'Registrar si desvía la mirada o nombra el distractor periférico (marcar Error).',
+   start:'Fijación en el punto central antes de cada estímulo.',
+   build:()=>Array.from({length:30},()=>incong(colorsOf(4),{dist:distractors()})) },
+ { n:7, name:'Nivel 7 – Alto (regla condicional en memoria)',
+   pac:'«Si la palabra está en tinta ROJA o AZUL, diga el color de la tinta. Si está en tinta VERDE o AMARILLA, lea la palabra.»',
+   ter:'Sin pistas visuales: el paciente retiene la regla en memoria operativa. Fallo: no recuerda la regla tras 2 recordatorios.',
+   start:'Pedir al paciente que repita la regla de memoria.',
+   build:()=>Array.from({length:30},()=>{
+     const it=incong(colorsOf(4));
+     if(it.ink==='VERDE'||it.ink==='AMARILLO'){ it.rule='read'; it.answer=it.text; }
+     return it; }) },
+ { n:8, name:'Nivel 8 – Muy alto (Stroop + conteo mental)',
+   pac:'«Diga el color de la tinta de cada palabra, y además cuente mentalmente cuántas veces aparece escrita la palabra “AZUL” (sin importar su tinta). Al final me dirá la cuenta.»',
+   ter:'Evaluar división de recursos atencionales. Margen tolerable del conteo: ±1.',
+   start:'El paciente confirma que memorizó el objetivo a contar (AZUL).',
+   countTarget:'AZUL',
+   build:()=>{ const c=colorsOf(4), it=[]; const nAz=6+rnd(4);
+     for(let i=0;i<nAz;i++){ it.push({text:'AZUL',ink:pick(['ROJO','VERDE','AMARILLO']),rule:'color',congruent:false}); }
+     while(it.length<36){ const x=incong(c); if(x.text!=='AZUL') it.push(x); }
+     it.forEach(x=>x.answer=x.ink); return shuffle(it); } },
+ { n:9, name:'Nivel 9 – Muy alto (presión temporal)',
+   pac:'«Las palabras cambiarán rápido (cada 1.5–2.5 s). Diga el color de la tinta antes de que cambie. Si no le da tiempo, pase a la nueva.»',
+   ter:'Avance automático. Marque la respuesta mientras el ítem está en pantalla; si no marca, se registra omisión. 4 omisiones seguidas → bajar al tramo anterior.',
+   start:'Ajustar el ritmo y decir «¡Listo, ya!».',
+   timed:true,
+   build:()=>Array.from({length:40},(_,i)=>incong(colorsOf(4),{ms: i<10?2500 : i<25?2000 : 1500})) },
+ { n:10, name:'Nivel 10 – Máxima exigencia (multitarea cognitivo-motora)',
+   pac:'«1) MAYÚSCULAS: diga el color de la tinta. 2) minúsculas: lea la palabra. 3) Si el significado y la tinta COINCIDEN, además de responder, dé un golpe suave en la mesa con su mano dominante.»',
+   ter:'Monitorear bloqueos, omisiones motoras e intrusiones de lectura. Detener ante sobrecarga severa o frustración.',
+   start:'3 ensayos guiados de verificación sin límite de tiempo.',
+   motor:true,
+   build:()=>Array.from({length:44},()=>{
+     const c=colorsOf(4); const isCong=Math.random()<0.3;
+     const base = isCong ? cong(c) : incong(c);
+     const upper = Math.random()<0.5;
+     base.text = upper ? base.text.toUpperCase() : base.text.toLowerCase();
+     if(upper){ base.rule='color'; base.answer=base.ink; }
+     else     { base.rule='read';  base.answer=base.text.toUpperCase(); }
+     base.tap = base.congruent; return base; }) }
+];
+
+/* ===================== ESTADO ===================== */
+let run=null;
+const $ = id => document.getElementById(id);
+LEVELS.forEach(l => { const o=document.createElement('option'); o.value=l.n; o.textContent=l.name; $('levelSel').appendChild(o); });
+const lvl = () => LEVELS.find(l => l.n === +$('levelSel').value);
+
+function showInfo(){
+  const l=lvl();
+  $('info').innerHTML = `<b>Al paciente:</b> ${l.pac}<br><b>Al terapeuta:</b> ${l.ter}<br><b>Inicio:</b> ${l.start}`;
+  $('btnMotor').style.display = l.motor ? '' : 'none';
+}
+$('levelSel').onchange = showInfo; showInfo();
+
+/* ===================== FLUJO ===================== */
+function start(){
+  const l=lvl(); const items=l.build();
+  run={ l, items, i:-1, res:[], t0:0, paused:false, timer:null, marked:false, sessionStart:Date.now() };
+  $('summaryPanel').classList.add('hidden'); $('banner').textContent='';
+  $('btnPause').textContent='Pausar (P)';
+  setControls(true); next();
+}
+function setControls(on){
+  ['btnOk','btnErr','btnSelf','btnPause','btnStop'].forEach(id=>$(id).disabled=!on);
+  $('btnMotor').disabled=!on; $('btnStart').disabled=on; $('levelSel').disabled=on;
+}
+function next(){
+  clearTimeout(run.timer);
+  run.i++;
+  if(run.i>=run.items.length) return finish();
+  const it=run.items[run.i]; run.marked=false; render(it);
+  $('progress').textContent = `Ítem ${run.i+1} / ${run.items.length}` + (it.block?` — Bloque ${it.block}`:'');
+  const exp = $('expected');
+  exp.classList.toggle('hidden', !$('chkExpected').checked);
+  exp.innerHTML = `<b>Esperado:</b> ${it.answer || '—'} <span class="small">(regla: ${it.rule==='read'?'LEER':'COLOR DE TINTA'})</span>` +
+                  (it.tap ? ' + <b>golpe en la mesa</b>' : '') + (it.cat ? ` <span class="small">[${it.cat}]</span>` : '');
+  run.t0 = performance.now();
+  if(run.l.timed){
+    run.timer = setTimeout(()=>{ if(!run.marked) record('omisión',null); next(); }, it.ms);
+  }
+}
+function render(it){
+  const st=$('stage'); st.innerHTML='';
+  (it.dist||[]).forEach(d=>{ const s=document.createElement('span'); s.className='dist'; s.textContent=d.sym;
+    s.style.left=d.x+'%'; s.style.top=d.y+'%'; s.style.color=d.col; st.appendChild(s); });
+  const el=document.createElement('div'); el.className='stim';
+  if(it.frame) el.classList.add(it.frame);
+  if(it.kind==='rect'){ el.classList.add('rect'); el.style.background=COLORS[it.ink]; }
+  else { el.textContent=it.text; el.style.color=COLORS[it.ink]; }
+  st.appendChild(el);
+}
+function record(tipo, lat){
+  const it=run.items[run.i];
+  run.res.push({ n:run.i+1, estimulo:it.kind==='rect'?'[rect]':it.text, tinta:it.ink, regla:it.rule,
+                 esperado:it.answer, resultado:tipo, latencia_ms:lat===null?'':Math.round(lat), nota:it.cat||it.block||'' });
+  checkAlerts(lat);
+}
+function mark(tipo, note){
+  if(!run || run.paused || run.marked) return;
+  const lat=performance.now()-run.t0; run.marked=true;
+  record(note ? tipo+' ('+note+')' : tipo, lat);
+  if(!run.l.timed) next();                 // en nivel 9 el avance es automático
+}
+
+/* ===================== ALERTAS CLÍNICAS ===================== */
+function checkAlerts(lat){
+  const r=run.res, msgs=[]; const isErr=x=>x.resultado.startsWith('error');
+  // Fatiga: latencia >50% respecto al ítem anterior
+  const prev=r.length>1 ? +r[r.length-2].latencia_ms : 0;
+  if(lat && prev && lat>prev*1.5) msgs.push('⚠ Latencia +50% respecto al ítem previo: valorar fatiga y pausar.');
+  if(run.l.n===3 && r.filter(isErr).length>5) msgs.push('⚠ >5 errores no corregidos: descender temporalmente al Nivel 2.');
+  if([5,7].includes(run.l.n) && r.length>=3 && r.slice(-3).every(isErr)) msgs.push('⚠ 3 errores consecutivos (posible perseveración): detener y recordar la regla.');
+  if(run.l.n===9 && r.length>=4 && r.slice(-4).every(x=>x.resultado==='omisión')) msgs.push('⚠ 4 omisiones seguidas (freezing): reducir la velocidad al tramo anterior.');
+  $('banner').textContent = msgs.join('  ');
+}
+
+/* ===================== PAUSA / FIN ===================== */
+function togglePause(){
+  if(!run) return;
+  run.paused=!run.paused;
+  $('btnPause').textContent = run.paused ? 'Reanudar (P)' : 'Pausar (P)';
+  if(run.paused){ clearTimeout(run.timer); $('banner').textContent='⏸ Sesión en pausa.'; }
+  else {
+    $('banner').textContent='';
+    run.t0=performance.now();
+    if(run.l.timed) resumeTimer();
+  }
+}
+function resumeTimer(){ // en modo cronometrado se reinicia el ítem actual
+  const it=run.items[run.i];
+  run.timer=setTimeout(()=>{ if(!run.marked) record('omisión',null); next(); }, it.ms);
+}
+function finish(){
+  clearTimeout(run.timer); setControls(false);
+  $('stage').innerHTML='<span class="small">Serie finalizada.</span>'; $('expected').classList.add('hidden');
+  let countInfo='';
+  if(run.l.countTarget){
+    const real=run.items.filter(x=>x.text===run.l.countTarget).length;
+    const resp=parseInt(prompt(`¿Cuántas veces apareció “${run.l.countTarget}”? (respuesta del paciente)`),10);
+    if(!isNaN(resp)) countInfo=`<p><b>Conteo:</b> paciente = ${resp}, real = ${real} → ${Math.abs(resp-real)<=1?'dentro del margen (±1)':'fuera del margen'}.</p>`;
+  }
+  summarize(countInfo);
+}
+$('btnStop').onclick=()=>{ if(run){ clearTimeout(run.timer); setControls(false); summarize(''); } };
+
+function summarize(extra){
+  const r=run.res, n=r.length;
+  const okN=r.filter(x=>x.resultado==='correcto'||x.resultado==='autocorrección').length;
+  const errN=r.filter(x=>x.resultado.startsWith('error')).length;
+  const omN=r.filter(x=>x.resultado==='omisión').length;
+  const selfN=r.filter(x=>x.resultado==='autocorrección').length;
+  const lats=r.map(x=>+x.latencia_ms).filter(x=>x>0);
+  const mean=lats.length? Math.round(lats.reduce((a,b)=>a+b,0)/lats.length):0;
+  const acc=n? (okN/run.items.length*100):0;
+  const mastery=acc>=85;
+  $('summary').innerHTML = `
+    <p><b>${run.l.name}</b></p>
+    <p>Ítems respondidos: ${n}/${run.items.length} · Correctas: ${okN} · Errores: ${errN} · Omisiones: ${omN} · Autocorrecciones: ${selfN}</p>
+    <p><b>Precisión:</b> ${acc.toFixed(1)}% · <b>Latencia media:</b> ${mean} ms</p>
+    <p><b>Criterio de dominio (≥85%):</b> ${mastery?'✅ alcanzado en esta sesión':'❌ no alcanzado'}
+       <span class="small">(debe mantenerse además sin fatiga en 2 sesiones consecutivas para avanzar de nivel)</span></p>
+    ${extra}`;
+  $('detail').innerHTML = '<table><tr><th>#</th><th>Estímulo</th><th>Tinta</th><th>Regla</th><th>Esperado</th><th>Resultado</th><th>Lat. (ms)</th></tr>' +
+    r.map(x=>`<tr><td>${x.n}</td><td>${x.estimulo}</td><td>${x.tinta}</td><td>${x.regla}</td><td>${x.esperado}</td><td>${x.resultado}</td><td>${x.latencia_ms}</td></tr>`).join('') + '</table>';
+  $('summaryPanel').classList.remove('hidden');
+}
+$('btnCsv').onclick=()=>{
+  const head=['n','estimulo','tinta','regla','esperado','resultado','latencia_ms','nota'];
+  const rows=run.res.map(x=>head.map(h=>`"${x[h]}"`).join(','));
+  const blob=new Blob(['\ufeff'+head.join(',')+'\n'+rows.join('\n')],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download=`stroop_nivel${run.l.n}_${new Date().toISOString().slice(0,10)}.csv`; a.click();
+};
+
+/* ===================== EVENTOS ===================== */
+$('btnStart').onclick=start;
+$('btnPause').onclick=togglePause;
+$('btnOk').onclick  =()=>mark('correcto');
+$('btnErr').onclick =()=>mark('error');
+$('btnSelf').onclick=()=>mark('autocorrección');
+$('btnMotor').onclick=()=>mark('error','omisión motora');
+$('chkExpected').onchange=()=>$('expected').classList.toggle('hidden',!$('chkExpected').checked||!run);
+
+document.addEventListener('keydown', e => {
+  // Solo actúa si hay una sesión en curso (los botones están habilitados)
+  if (!run || $('btnOk').disabled) return;
+
+  // Barra espaciadora = confirmar respuesta correcta y pasar al siguiente ítem
+  if (e.code === 'Space') {
+    e.preventDefault();                 // evita el scroll y que active un botón enfocado
+    if (document.activeElement) document.activeElement.blur();
+    if (!e.repeat) mark('correcto');    // e.repeat evita saltos si se mantiene pulsada
+    return;
+  }
+
+  const k = e.key.toLowerCase();
+  if (k === 'c') mark('correcto');
+  else if (k === 'e') mark('error');
+  else if (k === 'a') mark('autocorrección');
+  else if (k === 'm' && run.l.motor) mark('error', 'omisión motora');
+  else if (k === 'p') togglePause();
+});
+
+// Algunos navegadores (Firefox) disparan el "click" del botón enfocado al soltar la barra
+document.addEventListener('keyup', e => {
+  if (e.code === 'Space' && run && !$('btnOk').disabled) e.preventDefault();
+});
+</script>
+</body>
+</html>
